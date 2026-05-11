@@ -1,6 +1,6 @@
 # Kernel patch
 
-This branch is for a kernel patch to build Tirdad functionality right into the kernel at compile time and can be toggled with a sysctl called "kernel.ipv4.tcp_random.isn
+This branch is for a kernel patch to build Tirdad functionality right into the kernel at compile time and can be toggled with a sysctl called "net/ipv4/tcp_random_isn" toggled by `sudo sysctl -w net/ipv4/tcp_random_isn=1` or toggled by setting a file in `/etc/sysctl.d/` along with other typical hardening sysctls
 
 I am working on moving my personal repo to this fork for more visibility. If you need a tested and working patch for older kernels, you can go to my personal repo called "tirdad-patch"
 
