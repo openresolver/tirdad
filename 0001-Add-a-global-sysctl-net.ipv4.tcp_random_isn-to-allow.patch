@@ -1,0 +1,109 @@
+From c1c4a26b2dcabdf3fe166063e9b84796a810011d Mon Sep 17 00:00:00 2001
+From: user <user@foxtrot.mwclabs.com>
+Date: Mon, 11 May 2026 22:35:51 -0400
+Subject: [PATCH] Add a global sysctl, net.ipv4.tcp_random_isn, to allow
+ enabling fully random TCP Initial Sequence Number (ISN) generation.
+
+When enabled, TCP ISNs are generated using get_random_bytes()
+instead of the existing siphash-based mechanism. This provides
+an optional hardening mode for systems that prefer fully random
+ISNs over deterministic hashing.
+
+The sysctl is global rather than per-network namespace, reflecting
+its role as a system-wide security policy toggle. The default
+behavior remains unchanged, preserving upstream semantics unless
+explicitly enabled by the administrator.
+
+The change updates secure_tcp_seq_and_ts_off() and secure_tcpv6_seq_and_ts_off() to
+conditionally select the ISN generation method based on the sysctl.
+---
+ net/core/secure_seq.c      | 28 ++++++++++++++++++++++++++++
+ net/ipv4/sysctl_net_ipv4.c | 12 ++++++++++++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/net/core/secure_seq.c b/net/core/secure_seq.c
+index 6a6f2cda5..911ecd349 100644
+--- a/net/core/secure_seq.c
++++ b/net/core/secure_seq.c
+@@ -21,6 +21,24 @@
+ 
+ static siphash_aligned_key_t net_secret;
+ 
++/* Global toggle for random TCP ISN generation; default off */
++int sysctl_tcp_random_isn __read_mostly;
++
++/* Get random ISN & TS offset logic */
++static union tcp_seq_and_ts_off get_isn_ts(const struct net *net)
++{
++	union tcp_seq_and_ts_off seq_ts;
++
++	seq_ts.ts_off = 0;
++
++	get_random_bytes(&seq_ts.seq, sizeof(seq_ts.seq));
++
++	if (READ_ONCE(net->ipv4.sysctl_tcp_timestamps) == 1)
++		get_random_bytes(&seq_ts.ts_off, sizeof(seq_ts.ts_off));
++
++	return seq_ts;
++}
++
+ #define EPHEMERAL_PORT_SHUFFLE_PERIOD (10 * HZ)
+ 
+ static __always_inline void net_secret_init(void)
+@@ -64,6 +82,11 @@ secure_tcpv6_seq_and_ts_off(const struct net *net, const __be32 *saddr,
+ 	};
+ 	union tcp_seq_and_ts_off st;
+ 
++	if (READ_ONCE(sysctl_tcp_random_isn)) {
++
++		return get_isn_ts(net);
++	}
++
+ 	net_secret_init();
+ 
+ 	st.hash64 = siphash(&combined, offsetofend(typeof(combined), dport),
+@@ -111,6 +134,11 @@ secure_tcp_seq_and_ts_off(const struct net *net, __be32 saddr, __be32 daddr,
+ 	u32 ports = (__force u32)sport << 16 | (__force u32)dport;
+ 	union tcp_seq_and_ts_off st;
+ 
++	if (READ_ONCE(sysctl_tcp_random_isn)) {
++
++		return get_isn_ts(net);
++	}
++
+ 	net_secret_init();
+ 
+ 	st.hash64 = siphash_3u32((__force u32)saddr, (__force u32)daddr,
+diff --git a/net/ipv4/sysctl_net_ipv4.c b/net/ipv4/sysctl_net_ipv4.c
+index 687dc0058..2116a8633 100644
+--- a/net/ipv4/sysctl_net_ipv4.c
++++ b/net/ipv4/sysctl_net_ipv4.c
+@@ -51,6 +51,9 @@ static int tcp_ecn_mode_max = 5;
+ static u32 icmp_errors_extension_mask_all =
+ 	GENMASK_U8(ICMP_ERR_EXT_COUNT - 1, 0);
+ 
++/* sysctl_tcp_random_isn */
++extern int sysctl_tcp_random_isn;
++
+ /* obsolete */
+ static int sysctl_tcp_low_latency __read_mostly;
+ 
+@@ -1651,6 +1654,15 @@ static struct ctl_table ipv4_net_table[] = {
+ 		.extra1		= SYSCTL_ONE_THOUSAND,
+ 		.extra2		= &tcp_rto_max_max,
+ 	},
++	{
++		.procname	= "tcp_random_isn",
++		.data		= &sysctl_tcp_random_isn,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE,
++	},
+ };
+ 
+ static __net_init int ipv4_sysctl_init_net(struct net *net)
+-- 
+2.47.3
+
